@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "negotiate-mcp"
+version = "0.1.1"
+description = "MCP server for the negotiate.v1 protocol — gives AI agents native tools to negotiate at any negotiate.v1-compliant storefront."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+  "mcp>=1.0",
+]
+authors = [{ name = "Pier39" }]
+keywords = ["mcp", "claude", "negotiation", "shopper", "agent", "negotiate.v1"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Communications :: Chat",
+  "Topic :: Software Development :: Libraries",
+]
+
+[project.urls]
+Homepage = "https://github.com/sanjana-pier39/negotiate-mcp"
+Repository = "https://github.com/sanjana-pier39/negotiate-mcp"
+Protocol = "https://github.com/sanjana-pier39/pier39-skills/blob/main/PROTOCOL.md"
+Issues = "https://github.com/sanjana-pier39/negotiate-mcp/issues"
+
+[project.scripts]
+negotiate-mcp = "negotiate_mcp.server:main"
+
+[tool.setuptools.packages.find]
+include = ["negotiate_mcp*"]

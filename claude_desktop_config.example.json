@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "negotiate-agent": {
+      "command": "uvx",
+      "args": ["negotiate-mcp"]
+    }
+  }
+}
