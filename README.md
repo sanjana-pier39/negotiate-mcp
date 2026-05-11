@@ -4,8 +4,11 @@
 [![Tests](https://github.com/sanjana-pier39/negotiate-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/sanjana-pier39/negotiate-mcp/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/pypi/pyversions/negotiate-mcp.svg)](https://pypi.org/project/negotiate-mcp/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/sanjana-pier39/negotiate-mcp/blob/main/LICENSE)
+[![Connectors Directory](https://img.shields.io/badge/Anthropic_Connectors-pending_review-yellow)](#status)
 
 Model Context Protocol (MCP) server for the **[negotiate.v1](https://github.com/sanjana-pier39/negotiate-mcp/blob/main/PROTOCOL.md)** protocol. Once installed in Claude Desktop, Cowork, Claude Code, or any other MCP-aware client, your Claude gains six native tools for discovering and negotiating at any negotiate.v1-compliant store.
+
+![demo: Claude negotiates a discount at the Atlas reference store via negotiate-mcp](https://raw.githubusercontent.com/sanjana-pier39/negotiate-mcp/main/demo.gif)
 
 ## What you get
 
