@@ -19,7 +19,7 @@ or
 # Define __version__ BEFORE importing from server. server.py reads it back
 # during _build_mcp() to set serverInfo.version, so it needs to exist on the
 # package namespace before that import runs.
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 from negotiate_mcp.server import mcp, main
 

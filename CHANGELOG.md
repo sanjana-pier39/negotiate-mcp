@@ -8,6 +8,18 @@ All notable changes to `negotiate-mcp`. Format follows [Keep a Changelog](https:
 
 ---
 
+## 0.2.2 — 2026-05-11
+
+### Fixed
+- **Two remaining `pier39-skills` references in the README** — the "Adding more stores" section and the "Privacy & telemetry" section both linked at `github.com/sanjana-pier39/pier39-skills/...` instead of this repo. Spec link now points at `negotiate-mcp/PROTOCOL.md`; privacy link points at the canonical hosted page at `negotiate.pier39.ai/privacy`.
+
+### Changed
+- **PyPI `project.urls`** now ships with: `Homepage = https://mcp.pier39.ai` (the live product, was the source repo), plus new `Documentation` and `Changelog` entries. PyPI's "Project links" sidebar now mirrors what a reviewer expects to find on a polished package.
+
+(0.2.2 is a metadata-and-docs-only release — no server behavior changes. CHANGELOG, CI, annotations, transport security, SSRF guard, rate limiter all unchanged from 0.2.1.)
+
+---
+
 ## 0.2.1 — 2026-05-11
 
 ### Changed

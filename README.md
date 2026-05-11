@@ -388,7 +388,7 @@ Most useful when paired with the [`mcp` CLI](https://github.com/modelcontextprot
 
 The connector works against any negotiate.v1-compliant store, not just the Atlas reference (`negotiate.pier39.ai`). As stores adopt the protocol, just point your shopper agent at their domain — the same six tools work everywhere. (Use `find_stores(query, category)` to discover what's already in the public directory.)
 
-See [PROTOCOL.md](https://github.com/sanjana-pier39/pier39-skills/blob/main/PROTOCOL.md) for the full spec.
+See [PROTOCOL.md](https://github.com/sanjana-pier39/negotiate-mcp/blob/main/PROTOCOL.md) for the full spec.
 
 ## Develop locally
 
@@ -477,7 +477,7 @@ If you operate your own hosted instance and need a stricter or looser cap, see `
 
 The hosted endpoint at `mcp.pier39.ai` runs telemetry on Pier39's server, governed by the same retention rules; if you need a no-telemetry deployment, run the connector locally with `TELEMETRY_DISABLED=1`.
 
-Full policy: [`PRIVACY.md`](https://github.com/sanjana-pier39/pier39-skills/blob/main/PRIVACY.md) (also published at https://negotiate.pier39.ai/privacy).
+Full policy: hosted at [negotiate.pier39.ai/privacy](https://negotiate.pier39.ai/privacy) (canonical).
 
 ## Authentication
 
