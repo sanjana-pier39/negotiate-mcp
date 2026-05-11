@@ -74,12 +74,20 @@ def _build_mcp() -> FastMCP:
         allowed_hosts=allowed_hosts,
         allowed_origins=allowed_origins,
     )
-    return FastMCP("negotiate-agent", transport_security=security)
+    mcp_instance = FastMCP("negotiate-mcp", transport_security=security)
+    # Override the server version so initialize reports our package version
+    # (e.g. "0.2.1") rather than the underlying MCP SDK version. Without this
+    # override the SDK's own version leaks through into serverInfo.version,
+    # which confuses reviewers comparing the running server against the PyPI
+    # release.
+    from negotiate_mcp import __version__ as _pkg_version
+    mcp_instance._mcp_server.version = _pkg_version
+    return mcp_instance
 
 
 mcp = _build_mcp()
 
-USER_AGENT = "negotiate-mcp/0.1 (+https://github.com/sanjana-pier39/pier39-skills)"
+USER_AGENT = "negotiate-mcp/0.2 (+https://github.com/sanjana-pier39/negotiate-mcp)"
 DEFAULT_TIMEOUT = 30
 
 

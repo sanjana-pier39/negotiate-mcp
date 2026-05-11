@@ -8,6 +8,17 @@ All notable changes to `negotiate-mcp`. Format follows [Keep a Changelog](https:
 
 ---
 
+## 0.2.1 — 2026-05-11
+
+### Changed
+- **Server identity** in MCP `initialize` response now reports `name="negotiate-mcp"` and `version=<package version>` instead of `name="negotiate-agent"` and the underlying MCP SDK version. Brings `serverInfo` into alignment with the PyPI package and the directory submission so reviewers see consistent identity across surfaces.
+- **`USER_AGENT` outbound header** updated to `negotiate-mcp/0.2 (+https://github.com/sanjana-pier39/negotiate-mcp)` (was pointing at the unrelated `pier39-skills` repo).
+
+### Fixed
+- **`Protocol` URL in PyPI `project_urls`** now points to `negotiate-mcp/PROTOCOL.md` (was incorrectly pointing at the unrelated `pier39-skills` repo). `PROTOCOL.md` is now bundled in this repository.
+
+---
+
 ## 0.2.0 — 2026-05-10
 
 ### Added

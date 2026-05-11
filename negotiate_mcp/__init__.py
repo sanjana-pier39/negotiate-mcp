@@ -16,7 +16,11 @@ Run with:
 or
     python -m negotiate_mcp
 """
+# Define __version__ BEFORE importing from server. server.py reads it back
+# during _build_mcp() to set serverInfo.version, so it needs to exist on the
+# package namespace before that import runs.
+__version__ = "0.2.1"
+
 from negotiate_mcp.server import mcp, main
 
-__all__ = ["mcp", "main"]
-__version__ = "0.2.0"
+__all__ = ["mcp", "main", "__version__"]
