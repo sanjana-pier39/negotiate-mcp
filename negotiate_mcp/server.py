@@ -376,11 +376,18 @@ def _rate_limit_middleware(asgi_app):
 
 
 # ---------------------------------------------------------------------------
-# Favicon redirect — so the directory listing and Google's favicon API
-# show the right Pier39 brand icon for tool calls. mcp.pier39.ai itself
-# doesn't serve static files; we 302 to the canonical icon at pier39.ai.
-# Bypasses rate limiter and transport security so Google's crawler always
-# gets it without bumping into any guards.
+# Static route middleware — handles two endpoints that the MCP layer doesn't:
+#   /favicon.ico      → 302 redirect to the canonical Pier39 brand icon, so
+#                       the directory listing and Google's favicon API show
+#                       the right logo for tool calls.
+#   /health           → 200 OK JSON, for Fly's HTTP health check (configured
+#                       in fly.toml). Without this, Fly's prober gets 404,
+#                       marks the machine unhealthy, and auto_stop_machines
+#                       takes the app offline. Same response on /api/health
+#                       to be friendly to other monitoring conventions.
+#
+# Both bypass rate limiter and transport security so external probes always
+# succeed without bumping into any guards.
 # ---------------------------------------------------------------------------
 
 _FAVICON_TARGET = _os.environ.get(
@@ -388,22 +395,41 @@ _FAVICON_TARGET = _os.environ.get(
     "https://pier39.ai/icon.png?20c219485b49c924",
 )
 
+_HEALTH_BODY = b'{"ok":true,"server":"negotiate-mcp"}'
+
 
 def _favicon_middleware(asgi_app):
-    """Redirect /favicon.ico to the Pier39 brand icon."""
+    """Handle /favicon.ico (302) and /health, /api/health (200 OK)."""
     async def wrapped(scope, receive, send):
-        if scope.get("type") == "http" and scope.get("path") == "/favicon.ico":
-            await send({
-                "type": "http.response.start",
-                "status": 302,
-                "headers": [
-                    (b"location", _FAVICON_TARGET.encode("latin-1")),
-                    (b"cache-control", b"public, max-age=86400"),
-                    (b"content-length", b"0"),
-                ],
-            })
-            await send({"type": "http.response.body", "body": b""})
-            return
+        if scope.get("type") == "http":
+            path = scope.get("path")
+
+            if path == "/favicon.ico":
+                await send({
+                    "type": "http.response.start",
+                    "status": 302,
+                    "headers": [
+                        (b"location", _FAVICON_TARGET.encode("latin-1")),
+                        (b"cache-control", b"public, max-age=86400"),
+                        (b"content-length", b"0"),
+                    ],
+                })
+                await send({"type": "http.response.body", "body": b""})
+                return
+
+            if path in ("/health", "/api/health"):
+                await send({
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(_HEALTH_BODY)).encode()),
+                        (b"cache-control", b"no-store"),
+                    ],
+                })
+                await send({"type": "http.response.body", "body": _HEALTH_BODY})
+                return
+
         await asgi_app(scope, receive, send)
     return wrapped
 
