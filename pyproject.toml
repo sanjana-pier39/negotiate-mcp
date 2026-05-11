@@ -28,9 +28,11 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/sanjana-pier39/negotiate-mcp"
+Homepage = "https://mcp.pier39.ai"
+Documentation = "https://github.com/sanjana-pier39/negotiate-mcp#readme"
 Repository = "https://github.com/sanjana-pier39/negotiate-mcp"
 Protocol = "https://github.com/sanjana-pier39/negotiate-mcp/blob/main/PROTOCOL.md"
+Changelog = "https://github.com/sanjana-pier39/negotiate-mcp/blob/main/CHANGELOG.md"
 Issues = "https://github.com/sanjana-pier39/negotiate-mcp/issues"
 
 [project.scripts]
