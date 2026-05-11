@@ -376,6 +376,39 @@ def _rate_limit_middleware(asgi_app):
 
 
 # ---------------------------------------------------------------------------
+# Favicon redirect — so the directory listing and Google's favicon API
+# show the right Pier39 brand icon for tool calls. mcp.pier39.ai itself
+# doesn't serve static files; we 302 to the canonical icon at pier39.ai.
+# Bypasses rate limiter and transport security so Google's crawler always
+# gets it without bumping into any guards.
+# ---------------------------------------------------------------------------
+
+_FAVICON_TARGET = _os.environ.get(
+    "FAVICON_URL",
+    "https://pier39.ai/icon.png?20c219485b49c924",
+)
+
+
+def _favicon_middleware(asgi_app):
+    """Redirect /favicon.ico to the Pier39 brand icon."""
+    async def wrapped(scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path") == "/favicon.ico":
+            await send({
+                "type": "http.response.start",
+                "status": 302,
+                "headers": [
+                    (b"location", _FAVICON_TARGET.encode("latin-1")),
+                    (b"cache-control", b"public, max-age=86400"),
+                    (b"content-length", b"0"),
+                ],
+            })
+            await send({"type": "http.response.body", "body": b""})
+            return
+        await asgi_app(scope, receive, send)
+    return wrapped
+
+
+# ---------------------------------------------------------------------------
 # Public store directory (for find_stores tool)
 # ---------------------------------------------------------------------------
 
@@ -743,6 +776,11 @@ def main() -> None:
         # RATE_LIMIT_DISABLED=1 to bypass entirely. See _audit/RATE_LIMITING.md
         # for multi-instance / Redis-backed scaling and Cloudflare edge rules.
         app = _rate_limit_middleware(app)
+
+        # Outermost: 302 /favicon.ico -> pier39.ai/icon.png so the directory
+        # listing and Google favicon API show the brand icon. Bypasses rate
+        # limit and transport security; safe because it returns no data.
+        app = _favicon_middleware(app)
 
         try:
             import uvicorn
