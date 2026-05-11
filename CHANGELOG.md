@@ -8,9 +8,7 @@ All notable changes to `negotiate-mcp`. Format follows [Keep a Changelog](https:
 
 ---
 
-## 0.2.0 — *unreleased*
-
-> Note: this entry covers the audit-driven engineering pass. Set the date when `twine upload` lands and update this line.
+## 0.2.0 — 2026-05-10
 
 ### Added
 - **Tool annotations** on every tool (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`). Required for the Anthropic Connectors Directory and any other MCP catalog that consumes annotations.

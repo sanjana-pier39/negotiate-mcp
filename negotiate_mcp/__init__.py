@@ -19,4 +19,4 @@ or
 from negotiate_mcp.server import mcp, main
 
 __all__ = ["mcp", "main"]
-__version__ = "0.1.4"
+__version__ = "0.2.0"
