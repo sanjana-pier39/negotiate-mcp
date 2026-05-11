@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "negotiate-mcp"
-version = "0.1.1"
+version = "0.1.4"
 description = "MCP server for the negotiate.v1 protocol — gives AI agents native tools to negotiate at any negotiate.v1-compliant storefront."
 readme = "README.md"
 license = { text = "MIT" }
