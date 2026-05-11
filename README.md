@@ -8,13 +8,14 @@ Model Context Protocol (MCP) server for the **[negotiate.v1](https://github.com/
 
 | Tool | Purpose |
 | --- | --- |
+| `find_stores(query, category)` | Search the public negotiate.v1 directory for compliant stores. |
 | `discover_store(domain)` | Probe a domain to check if it's negotiable. Returns the protocol descriptor. |
 | `list_products(domain)` | Enumerate negotiable products at the store. |
 | `start_negotiation(domain, product_id)` | Open a chat session with the merchant agent. |
 | `send_message(next_url, message)` | Send one shopper turn. |
 | `read_history(history_url)` | Read the running history of a session. |
 
-The agent uses these like a human would use a browser: discover the store, pick a product, start a chat, send turns until the deal closes.
+The agent uses these like a human would use a browser: find a store, discover its protocol, pick a product, start a chat, send turns until the deal closes.
 
 mcp-name: io.github.sanjana-pier39/negotiate-mcp
 
