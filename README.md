@@ -13,8 +13,11 @@ Model Context Protocol (MCP) server for the **[negotiate.v1](https://github.com/
 ## Status
 
 - **Hosted endpoint** — live at [`https://mcp.pier39.ai/mcp`](https://mcp.pier39.ai/mcp), monitored, MIT-licensed source.
-- **PyPI** — `pip install negotiate-mcp` ([0.2.1](https://pypi.org/project/negotiate-mcp/)).
-- **Reference store** — [negotiate.pier39.ai/store](https://negotiate.pier39.ai/store) (currently the only `negotiate.v1` storefront in the public directory; more underway).
+- **PyPI** — `pip install negotiate-mcp` ([0.2.2](https://pypi.org/project/negotiate-mcp/)).
+- **Stores in the public directory** — two so far:
+  - [Atlas reference store](https://negotiate.pier39.ai/store) — Pier39's open reference implementation for testing and integration.
+  - **Skout Organic** ([skout-organic-negotiate.fly.dev](https://skout-organic-negotiate.fly.dev/negotiate.json)) — 29 organic snacks, kids bars, and protein bars. Pier39-operated integration; Skout supplies the catalog. First brand catalog in the directory beyond the reference store.
+  - More brand integrations underway. If you want one for your storefront, see Support below.
 - **Anthropic Connectors Directory** — submitted, awaiting review. This README and the hosted endpoint are the canonical source of truth during the review window; please don't rely on caches or third-party mirrors.
 - **Maintenance** — actively developed by [Pier39](https://negotiate.pier39.ai). Reach me at [sanjana@pier39.ai](mailto:sanjana@pier39.ai) or via [GitHub Discussions](https://github.com/sanjana-pier39/negotiate-mcp/discussions) for usage questions, [GitHub Issues](https://github.com/sanjana-pier39/negotiate-mcp/issues) for bugs.
 
