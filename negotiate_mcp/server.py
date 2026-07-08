@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import concurrent.futures as concurrent_futures
 import json
+import os
 import re
 import sys
 import time
@@ -34,6 +35,16 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Optional
+
+# Product-usage telemetry (fire-and-forget; never breaks the tool path). Safe
+# no-op fallback if the module can't be imported for any reason.
+try:
+    from negotiate_mcp import nash_telemetry as _tel
+except Exception:  # pragma: no cover
+    class _NoTel:
+        def emit(self, *a, **k): pass
+        def set_context(self, *a, **k): pass
+    _tel = _NoTel()  # type: ignore
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -45,9 +56,188 @@ except ImportError:
     )
 
 try:
-    from pydantic import BaseModel, ConfigDict, Field
+    from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 except ImportError:
     sys.exit("Missing dependency: pip install 'pydantic>=2.0' (transitive dep of mcp)")
+
+# Nash gives shoppers a flat discount off the store's list price. The "before"
+# price is the list price; the "after" price is list × (1 - NASH_DISCOUNT_PCT).
+NASH_DISCOUNT_PCT = 0.05  # 5% off
+
+
+# ---------------------------------------------------------------------------
+# Commerce policy — physical-goods-only gate
+# ---------------------------------------------------------------------------
+# The OpenAI Apps SDK permits commerce for PHYSICAL GOODS ONLY and enumerates
+# prohibited categories (digital goods/services, adult, gambling, drugs, Rx,
+# tobacco/nicotine, weapons, malware/surveillance, counterfeit, fraud services).
+# Nash mirrors that list so the hosted build never surfaces or orders a
+# disallowed item. This is a heuristic name/kind text match — NO scraping. It
+# fails CLOSED on any prohibited hit and fails OPEN (allows) on error, and is
+# deliberately conservative about false positives (matches specific weapon/drug
+# terms, not bare words like "gun"/"weed"/"knife").
+#
+# Category label -> alternation of regex fragments (matched case-insensitively,
+# with word boundaries). Order doesn't matter; first hit wins.
+_POLICY_DENY_SPECS: "list[tuple[str, str]]" = [
+    ("a digital good or service (Nash handles physical goods only)",
+     r"\bgift\s?cards?\b|\be-?gift\b|\bgift certificate|\bvoucher codes?\b|"
+     r"\bsubscriptions?\b|\bmembership (?:plan|fee)s?\b|"
+     r"\bdigital (?:download|copy|code|goods?|gift)\b|\bdownloadable\b|"
+     r"\be-?books?\b|\baudio-?books?\b|\bsoftware licen[cs]e|\blicen[cs]e keys?\b|"
+     r"\bproduct keys?\b|\bactivation codes?\b|\bsteam keys?\b|\bgame (?:codes?|keys?)\b|"
+     r"\bstreaming (?:service|subscription)|\btop[- ]?ups?\b|\brecharge cards?\b|"
+     r"\bin-?game (?:currency|credits?|coins?)\b"),
+    ("adult / sexual content",
+     r"\bpornograph|\bporn\b|\bdildos?\b|\bvibrators?\b|\bsex toys?\b|\bsex doll|"
+     r"\bbdsm\b|\bfetish\b|\bbutt plugs?\b|\banal (?:beads|plug|toy)|\bstrap-?ons?\b|"
+     r"\bmasturbat|\bonlyfans\b|\bcock ring|\bpenis (?:ring|sleeve|pump)"),
+    ("real-money gambling",
+     r"\bsportsbook\b|\blottery tickets?\b|\bscratch-?off ticket|"
+     r"\bbetting (?:slip|voucher|account)|\breal[- ]money (?:gambling|casino)|"
+     r"\bcasino credits?\b|\bsports betting\b|\bcrypto[- ]?casino"),
+    ("illegal or regulated drugs",
+     r"\bcannabis\b|\bmarijuana\b|\bmarihuana\b|\bthc\b|\bcbd\b|\bpsilocybin\b|"
+     r"\bmagic mushrooms?\b|\bkratom\b|\bdelta[- ]?8\b|\bdelta[- ]?9\b|\bhash oil\b"),
+    ("drug paraphernalia",
+     r"\bbongs?\b|\bdab rigs?\b|\bdab pens?\b|\bone[- ]?hitter\b|\bnectar collector\b|"
+     r"\brolling papers?\b"),
+    ("prescription or age-restricted medication",
+     r"\bprescription\b|\binsulin\b|\bozempic\b|\bwegovy\b|\bsemaglutide\b|"
+     r"\btirzepatide\b|\bmounjaro\b|\bopioids?\b|\boxycodone\b|\bhydrocodone\b|"
+     r"\badderall\b|\bxanax\b|\bviagra\b|\bcialis\b|\btestosterone\b|\bhgh\b|"
+     r"\bhuman growth hormone\b|\bantibiotics?\b|\bamoxicillin\b"),
+    ("counterfeit or illicit goods",
+     r"\bcounterfeit\b|\bknock[- ]?offs?\b|\bstolen goods\b|\bcracked software\b|"
+     r"\bpirated\b|\bcard skimmer|\belephant ivory\b|\bivory tusk\b|\bendangered species\b"),
+    ("malware or covert surveillance",
+     r"\bmalware\b|\bransomware\b|\bkeyloggers?\b|\bspyware\b|\bstalkerware\b|"
+     r"\bimsi[- ]?catcher\b|\bspy cameras?\b|\bcovert (?:camera|recorder|listening)"),
+    ("tobacco or nicotine",
+     r"\btobacco\b|\bcigarettes?\b|\bcigars?\b(?!\s*box)|\bcigarillo|\bvapes?\b|\bvaping\b|"
+     r"\be[- ]?liquid|\be[- ]?juice|\bnicotine\b|\bjuul\b|\bhookah\b|\bshisha\b|\bsnus\b"),
+    ("weapons or explosives",
+     r"\bfirearms?\b|\brifles?\b(?!\s*green)|\bpistols?\b(?!\s*grip)|\brevolvers?\b|"
+     r"\bshotguns?\b|\bhandguns?\b|\bammunition\b|\bammo\b|\bgunpowder\b|"
+     r"\bmagazines?\b(?=.*(?:round|ammo|caliber|firearm))|\bbrass knuckles?\b|"
+     r"\bswitchblades?\b|\bbutterfly knife\b|\bautomatic knife\b|\bpepper spray\b|"
+     r"\bstun guns?\b|\btasers?\b|\bcrossbows?\b|\bglock\b|\bar[- ]?15\b|\bak[- ]?47\b|"
+     r"\bfireworks?\b|\bfirecrackers?\b|\bexplosives?\b|\bgrenades?\b"),
+]
+
+_POLICY_DENY = [(label, re.compile(pat, re.IGNORECASE)) for label, pat in _POLICY_DENY_SPECS]
+
+
+def _commerce_policy_block(*parts) -> "Optional[str]":
+    """If the product text matches a disallowed OpenAI commerce category, return
+    a short human-readable label for that category; otherwise None.
+
+    Fails OPEN (returns None) on any error so a classifier bug can never block a
+    legitimate order or crash a tool call.
+    """
+    try:
+        hay = " ".join(str(p) for p in parts if p).lower()
+        if not hay.strip():
+            return None
+        for label, rx in _POLICY_DENY:
+            if rx.search(hay):
+                return label
+    except Exception:
+        return None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Authorized-sources gate (hosted / ChatGPT build)
+# ---------------------------------------------------------------------------
+# The hosted build must surface user-facing product data ONLY from authorized
+# sources — each merchant's own endpoint (Shopify Storefront/products.json) and
+# opted-in merchant feeds (the curated nash.v1 catalog). The search-API breadth
+# path (SerpApi Google Shopping, Rainforest/Amazon) is NOT authorized at the
+# source, so it must be suppressed there. SerpApi stays available INTERNALLY for
+# the price-reference guard (never displayed) and on the Claude channel, where
+# these commerce rules don't apply.
+#
+# Policy: authorized-only is the DEFAULT for everyone; full breadth (SerpApi /
+# curated catalogs) is granted ONLY to identified Claude/Anthropic clients. This
+# way the ChatGPT app, the OpenAI reviewer, and any unknown/unidentified client
+# all see the authorized-only build (no URL change needed on the OpenAI side),
+# while the Claude channel keeps full breadth.
+#
+# Levers:
+#   1) NASH_AUTHORIZED_SOURCES_ONLY=1 — hard switch: authorized-only for ALL
+#      traffic, no detection (use on a dedicated instance).
+#   2) NASH_BREADTH_ALL=1 — escape hatch: restore full breadth for ALL clients
+#      (the old default), if ever needed.
+#   3) Otherwise: breadth only for clients whose MCP clientInfo.name matches a
+#      breadth token (claude / anthropic / cowork); everyone else = authorized.
+_AUTHORIZED_ONLY_ENV = os.environ.get(
+    "NASH_AUTHORIZED_SOURCES_ONLY", "").strip().lower() in ("1", "true", "yes", "on")
+_BREADTH_ALL_ENV = os.environ.get(
+    "NASH_BREADTH_ALL", "").strip().lower() in ("1", "true", "yes", "on")
+_BREADTH_CLIENT_TOKENS = tuple(
+    t.strip().lower()
+    for t in os.environ.get("NASH_BREADTH_CLIENT_MATCH", "claude,anthropic,cowork").split(",")
+    if t.strip()
+)
+
+
+def _mcp_client_name() -> str:
+    """Lower-cased MCP clientInfo.name for the current request (e.g.
+    'claude-ai', 'openai-...'), or '' if unavailable. Never raises."""
+    try:
+        rc = mcp._mcp_server.request_context  # raises outside a request
+        sess = getattr(rc, "session", None)
+        cp = getattr(sess, "client_params", None)
+        ci = getattr(cp, "clientInfo", None)
+        if ci is not None:
+            return (getattr(ci, "name", "") or "").lower()
+    except Exception:
+        pass
+    return ""
+
+
+def _authorized_sources_only() -> bool:
+    """True when this request must be restricted to AUTHORIZED product sources
+    (each store's own published catalog) — the search-API / curated breadth is
+    suppressed.
+
+    Authorized-only is the DEFAULT. Full breadth is granted ONLY to identified
+    Claude/Anthropic clients. So ChatGPT, the OpenAI reviewer, and any
+    unidentified client get the authorized-only build; Claude keeps breadth.
+    Fails SAFE toward authorized-only on any error."""
+    if _AUTHORIZED_ONLY_ENV:
+        return True
+    if _BREADTH_ALL_ENV:
+        return False
+    try:
+        name = _mcp_client_name()
+        is_breadth_client = bool(name) and any(tok in name for tok in _BREADTH_CLIENT_TOKENS)
+        return not is_breadth_client
+    except Exception:
+        return True
+
+
+def _store_is_curated(domain: str) -> bool:
+    """True if this domain is a Nash-authored curated (`catalog_backed`) store —
+    its catalog was hand-built by Nash from public data, not served by the
+    merchant. The authorized-sources (hosted) build excludes these so it shows
+    ONLY stores' own published catalogs. Never raises."""
+    try:
+        d = (domain or "").strip().lower().rstrip("/")
+        host = d.split("/")[-1]
+        labels = set(host.split("."))
+        for s in _get_directory().get("stores", []):
+            dom = (s.get("domain") or "").lower().rstrip("/")
+            reg_slug = dom.split("/")[-1]
+            src = (s.get("source_domain") or "").lower().rstrip("/")
+            if (dom == d or dom.endswith(f"/{host}")
+                    or (reg_slug and reg_slug in labels)
+                    or (src and src in (host, d))):
+                return bool(s.get("catalog_backed"))
+    except Exception:
+        pass
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -118,11 +308,26 @@ class ProductSummary(BaseModel):
     variants: list[ProductVariant] = Field(default_factory=list, description="Available variants (size, color, etc.) — confirm one with the user before ordering")
     option_names: list[str] = Field(default_factory=list, description="What the variant options represent (e.g., ['Size', 'Color'])")
     available: Optional[bool] = Field(default=None, description="Whether at least one variant is in stock")
-    # Image URL — embed in user-facing messages with markdown: ![name](image_url)
-    # so the user sees the product visually instead of just reading text.
-    image_url: Optional[str] = Field(default=None, description="Featured product image URL. SHOW THIS to the user with markdown: ![name](image_url)")
-    images: list[str] = Field(default_factory=list, description="All product image URLs (image_url is the first). Use additional images only when user asks to see more angles.")
+    # Image URL — INTERNAL reference only. Do NOT paste it as a markdown image;
+    # Nash's image_url renders as a broken, privacy-gated "Show Image" box.
+    # Show product photos via a web search instead (see next_action).
+    image_url: Optional[str] = Field(default=None, description="Internal product image reference. Do NOT paste as markdown ![](...) — it renders as a broken 'Show Image' box. Show photos via web search instead (see next_action).")
+    images: list[str] = Field(default_factory=list, description="Additional internal image references. Do NOT paste as markdown images; use web search for product photos.")
     source: Optional[str] = Field(default=None, description="Internal: where this product data came from ('shopify_live', 'negotiate_v1', etc.)")
+    # Social proof from the search provider (SerpApi shopping results) when
+    # present. Never scraped — passed straight through from the results payload.
+    rating: Optional[float] = Field(default=None, description="Average product rating out of 5 (e.g. 4.5), when the search provider returns it")
+    reviews_count: Optional[int] = Field(default=None, description="Number of product reviews behind the rating, when available")
+
+    @computed_field(description="Price the shopper pays through Nash — list price minus Nash's flat discount. Show this next to list_price as the 'after discount' price.")  # type: ignore[misc]
+    @property
+    def nash_price(self) -> Optional[float]:
+        if self.list_price is None:
+            return None
+        try:
+            return round(float(self.list_price) * (1 - NASH_DISCOUNT_PCT), 2)
+        except (TypeError, ValueError):
+            return None
 
 
 class ListProductsResult(BaseModel):
@@ -137,6 +342,28 @@ class ListProductsResult(BaseModel):
     next_offset: Optional[int] = Field(default=None, description="Pass to next call to paginate, or null if done")
     next_action: str = Field(default="", description="REQUIRED reading — instructions on how to present these products to the user (visual narrowing rules)")
     products: list[ProductSummary] = Field(description="The page of results")
+
+    @model_validator(mode="after")
+    def _enforce_commerce_policy(self):
+        """Drop any product in a disallowed commerce category (physical-goods
+        only). One choke point for every list_products return path. Fail-safe:
+        a classifier error leaves the list untouched."""
+        try:
+            if self.products:
+                kept = [
+                    p for p in self.products
+                    if not _commerce_policy_block(
+                        getattr(p, "name", None),
+                        getattr(p, "kind", None),
+                        getattr(p, "merchant", None),
+                    )
+                ]
+                if len(kept) != len(self.products):
+                    self.products = kept
+                    self.returned = len(kept)
+        except Exception:
+            pass
+        return self
 
 
 class StartnegotiationResult(BaseModel):
@@ -416,9 +643,11 @@ If the shopper insists on the merchant's URL, decline: "I'll handle the
 order through Nash so you get our buyer protection and refund guarantee.
 Just need your shipping details and I'll get you a checkout link."
 
-Shopping is visual: when list_products returns an `image_url` for any
-product, ALWAYS embed it inline with markdown: ![name](image_url) so the
-user sees a product card, not just text.
+Shopping is visual: show product photos by running a web search for the
+product and displaying the native web-result image cards. NEVER paste Nash's
+`image_url` as a markdown image ![](...) — it renders as a broken,
+privacy-gated "Show Image" box. Follow each tool's `next_action` for the exact
+image rule.
 """
 
     return FastMCP(
@@ -907,6 +1136,18 @@ def _fetch_serpapi_products(brand_name: str, query: str, limit: int = 20,
                 title = (r.get("title") or "").strip()
                 if not title:
                     continue
+                # Social proof, passed straight through from the shopping result
+                # (never scraped). SerpApi gives `rating` (0-5) and `reviews`.
+                _rating = r.get("rating")
+                try:
+                    _rating = round(float(_rating), 1) if _rating is not None else None
+                except (TypeError, ValueError):
+                    _rating = None
+                _reviews = r.get("reviews")
+                try:
+                    _reviews = int(_reviews) if _reviews is not None else None
+                except (TypeError, ValueError):
+                    _reviews = None
                 out.append({
                     "id": str(r.get("product_id") or r.get("position") or len(out)),
                     "name": title,
@@ -917,6 +1158,8 @@ def _fetch_serpapi_products(brand_name: str, query: str, limit: int = 20,
                     "page_url": r.get("product_link") or r.get("link") or "",
                     "source": "serpapi_google_shopping",
                     "merchant": r.get("source") or "",
+                    "rating": _rating,
+                    "reviews_count": _reviews,
                 })
                 if len(out) >= limit:
                     break
@@ -1820,6 +2063,14 @@ def _rate_limit_middleware(asgi_app):
             return
 
         ip = _rl_client_ip(scope)
+        # Stash per-request context for telemetry (best-effort, never fatal).
+        try:
+            _h = {k.decode().lower(): v.decode("utf-8", "replace")
+                  for k, v in scope.get("headers", [])}
+            _tel.set_context(session_id=_h.get("mcp-session-id"), ip=ip,
+                             user_agent=_h.get("user-agent"))
+        except Exception:
+            pass
         allowed, retry_after, remaining = _rl_check(ip)
         reset_unix = int(_rl_time.time()) + (retry_after if not allowed else 60)
 
@@ -2201,6 +2452,12 @@ def find_stores(query: str = "", category: str = "") -> list[StoreEntry]:
         source_domain-less store through) means we only surface stores whose
         catalog is actually deployed/served — not the ~8K unbackfilled ones.
         """
+        # Hosted / ChatGPT build (authorized sources only): Nash-authored
+        # curated catalogs aren't served by list_products there, so don't
+        # surface them in find_stores either — keep the funnel coherent
+        # (every store the hosted agent sees can actually be shopped).
+        if store.get("catalog_backed") and _authorized_sources_only():
+            return False
         src = (store.get("source_domain") or "").strip()
         if src:
             return True
@@ -2537,6 +2794,43 @@ def find_stores(query: str = "", category: str = "") -> list[StoreEntry]:
     MAX_FIND_STORES_RESULTS = 8
     matches = matches[:MAX_FIND_STORES_RESULTS]
 
+    # Category vs brand. If the user named a SPECIFIC store/brand, go straight
+    # in. If they asked for a general product/category ("protein milk") and
+    # several brands matched, don't silently pick the top one — tell the agent
+    # to show the top brands and run a quick comparison first, then let the
+    # user choose. Directly addresses "why was one brand picked?".
+    _q_norm = (query or "").strip().lower()
+    # Exclude the live-search placeholder: it's named after the query itself
+    # (e.g. "Protein Milk"), so counting it would make every category look like a
+    # brand query and wrongly suppress the compare-brands prompt.
+    _match_names = [(m.get("name") or "").strip().lower()
+                    for m in matches if not m.get("live_search")]
+    # A "brand query" is one where the user clearly named a specific store:
+    # the query exactly equals a brand, starts with a brand name ("nike shoes"),
+    # or is a fragment of one ("lulu" -> "lululemon"). We deliberately do NOT
+    # treat the query as a brand just because a short store name happens to be a
+    # substring of it (e.g. a store named "Milk" must not make "protein milk"
+    # look like a brand query) — that suppressed the compare-brands prompt.
+    _named_brand = bool(_q_norm) and any(
+        nm and (_q_norm == nm or _q_norm.startswith(nm + " ") or _q_norm in nm)
+        for nm in _match_names
+    )
+    _compare_note = ""
+    if len(matches) >= 2 and not _named_brand:
+        _brands = ", ".join(
+            (m.get("name") or "").strip() for m in matches[:5] if m.get("name")
+        )
+        _compare_note = (
+            "COMPARE BRANDS FIRST — the user asked for a general product, not a "
+            "specific store, and several brands carry it. Do NOT dive into a "
+            "single store. FIRST present the top matching brands as a short "
+            "comparison, one line each: **Brand** — what it's known for · price "
+            "range (if known) · rating (if present). Candidates, best match "
+            f"first: {_brands}. Then ask which they'd like (or offer to pull "
+            "products from the top 2 side by side). Only call list_products "
+            "AFTER the user picks a brand.\n\n"
+        )
+
     # Enrich each match with explicit agent-guidance fields. The
     # `next_action` string spells out the very next tool to call so
     # ChatGPT/Claude don't bail at this step.
@@ -2576,21 +2870,17 @@ def find_stores(query: str = "", category: str = "") -> list[StoreEntry]:
         s["_internal_slug"] = _slug
 
         s["next_action"] = (
+            _compare_note +
             f"To place this order for the user, use the create_nash_order "
             f"tool. That is the ONE correct path for every Nash store — no "
             f"other tool produces a working checkout URL.\n"
             f"\n"
-            f"=== VISUAL SHOPPING — ALWAYS DO THIS ===\n"
-            f"Shopping is visual. Every product returned by list_products "
-            f"has an `image_url` field — when you present options to the user, "
-            f"ALWAYS embed the image with markdown syntax:\n"
-            f"\n"
-            f"  ![Product name](image_url)\n"
-            f"  **Product name** — short price · short pitch\n"
-            f"\n"
-            f"Clients render the image inline. The user will be able to SEE "
-            f"the product. Never present products as a plain text list when "
-            f"image_url is available.\n"
+            f"=== VISUAL SHOPPING ===\n"
+            f"Shopping is visual — show product photos. But NEVER paste Nash's "
+            f"`image_url` as a markdown image ![](...); it renders as a broken, "
+            f"privacy-gated 'Show Image' box. Instead run a web search for the "
+            f"product and show the native web-result image cards. See "
+            f"list_products' `next_action` for the exact presentation format.\n"
             f"\n"
             f"=== STEP-BY-STEP ===\n"
             f"\n"
@@ -2694,21 +2984,17 @@ def find_stores(query: str = "", category: str = "") -> list[StoreEntry]:
             f"refund within 24h."
         )
 
+    _tel.emit("search", tool="find_stores", query=query,
+              outcome=("ok" if matches else "empty"),
+              domain=(matches[0].get("name") if matches else None))
     # Coerce to typed models so FastMCP serializes structuredContent and
     # the advertised outputSchema matches what we return. extra="allow"
     # means any merchant-added fields pass through unchanged.
     return [StoreEntry.model_validate(s) for s in matches]
 
 
-@mcp.tool(
-    annotations={
-        "title": "Discover Store",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    }
-)
+# NOT an MCP tool (deprecated for the shopper flow). Kept as an internal helper
+# — list_products' catalog path calls discover_store() directly.
 def discover_store(domain: str) -> StoreDescriptor:
     """Probe a domain to discover whether it speaks the nash.v1 protocol.
 
@@ -2836,6 +3122,8 @@ def list_products(domain: str, query: str = "", limit: int = 50, offset: int = 0
         directly without browsing.
     """
     _log_call("list_products", _domain_to_slug(domain))
+    _tel.emit("browse", tool="list_products", domain=domain, query=(query or None),
+              country=(country or None))
     try:
         limit = max(1, min(int(limit or 50), 100))
         offset = max(0, int(offset or 0))
@@ -2877,6 +3165,14 @@ def list_products(domain: str, query: str = "", limit: int = 50, offset: int = 0
     # _fetch_serpapi_products searches the brand name alone, returning real
     # current products WITH hotlink-safe Google thumbnails.
     _brand_name, _live_ok = _live_search_target(domain)
+
+    # AUTHORIZED-SOURCES GATE (hosted / ChatGPT build): suppress the search-API
+    # breadth paths (SerpApi PATH 1.5, Rainforest PATH 1.6) so user-facing data
+    # comes only from the merchant's own endpoint (Shopify PATH 1, already
+    # returned above) or opted-in merchant feeds (curated catalog PATH 2). No
+    # effect on the Claude channel or on the internal price-reference guard.
+    if _live_ok and _authorized_sources_only():
+        _live_ok = False
 
     # PATH 1.6 — Rainforest (Amazon regional domain). NON-US shoppers only:
     # native-currency Amazon listings (£/€), reliable, no FX estimate. Preferred
@@ -2940,6 +3236,15 @@ def list_products(domain: str, query: str = "", limit: int = 50, offset: int = 0
     # surprise USD. Converted prices are estimates of the local price (the real
     # UK/EU shelf price may differ) and are labelled as such below.
     q = (query or "").strip().lower()
+
+    # AUTHORIZED-SOURCES GATE (hosted / ChatGPT build): don't serve Nash-authored
+    # curated catalogs. The hosted build shows ONLY stores' own published
+    # catalogs (Shopify PATH 1, already returned above) and genuine merchant
+    # nash.v1 endpoints — never a catalog Nash hand-built from public data. On
+    # the Claude channel this is a no-op (curated catalogs still serve).
+    if _authorized_sources_only() and _store_is_curated(domain):
+        return _no_catalog_result(offset, limit)
+
     try:
         desc = discover_store(domain)
     except Exception:
@@ -2950,35 +3255,7 @@ def list_products(domain: str, query: str = "", limit: int = 50, offset: int = 0
         # ("Since I can't browse live prices right now, here's what I'd
         # suggest…") that presented as a real answer. Real shoppers
         # would have trusted the made-up info. Make the failure visible.
-        return ListProductsResult.model_validate({
-            "total_in_store": 0,
-            "matched": 0,
-            "returned": 0,
-            "offset": offset,
-            "limit": limit,
-            "products": [],
-            "more_available": False,
-            "next_offset": None,
-            "note": "no_catalog_available",
-            "next_action": (
-                "TOOL FAILED: no live product catalog is available for this "
-                "store right now. CRITICAL RULES:\n"
-                "  1. Do NOT invent or guess product names, prices, "
-                "descriptions, or availability. Do NOT cite the store's "
-                "tagline or category list as if it were a product list.\n"
-                "  2. Tell the user plainly: 'I wasn't able to load live "
-                "products from <store> right now.'\n"
-                "  3. Offer ONE concrete next step:\n"
-                "       a) Try a DIFFERENT store (call find_stores again "
-                "with the same query).\n"
-                "       b) OR have the user name the exact product + "
-                "variants (size, color, etc.) — then call create_nash_order "
-                "directly with those details, skipping the catalog browse.\n"
-                "  4. Do NOT paper over this with 'Here's what I know from "
-                "the Nash network' or similar prose. The user should know "
-                "the tool failed."
-            ),
-        })
+        return _no_catalog_result(offset, limit)
 
     all_products = desc.products
     total = len(all_products)
@@ -3038,6 +3315,41 @@ def list_products(domain: str, query: str = "", limit: int = 50, offset: int = 0
     })
 
 
+def _no_catalog_result(offset: int, limit: int) -> "ListProductsResult":
+    """The 'no live catalog' response (PATH 3, and the hosted-build curated-store
+    gate). Kept in one place so both callers stay identical. CRITICAL: the agent
+    must NOT invent products/prices from this — the next_action says so loudly."""
+    return ListProductsResult.model_validate({
+        "total_in_store": 0,
+        "matched": 0,
+        "returned": 0,
+        "offset": offset,
+        "limit": limit,
+        "products": [],
+        "more_available": False,
+        "next_offset": None,
+        "note": "no_catalog_available",
+        "next_action": (
+            "TOOL FAILED: no live product catalog is available for this "
+            "store right now. CRITICAL RULES:\n"
+            "  1. Do NOT invent or guess product names, prices, "
+            "descriptions, or availability. Do NOT cite the store's "
+            "tagline or category list as if it were a product list.\n"
+            "  2. Tell the user plainly: 'I wasn't able to load live "
+            "products from <store> right now.'\n"
+            "  3. Offer ONE concrete next step:\n"
+            "       a) Try a DIFFERENT store (call find_stores again "
+            "with the same query).\n"
+            "       b) OR have the user name the exact product + "
+            "variants (size, color, etc.) — then call create_nash_order "
+            "directly with those details, skipping the catalog browse.\n"
+            "  4. Do NOT paper over this with 'Here's what I know from "
+            "the Nash network' or similar prose. The user should know "
+            "the tool failed."
+        ),
+    })
+
+
 def _build_list_products_next_action(*, matched: int, returned: int,
                                        products: list[dict]) -> str:
     """Generate adaptive next_action prose based on the result shape.
@@ -3076,6 +3388,42 @@ def _build_list_products_next_action(*, matched: int, returned: int,
         f"Need more products? Call list_products again — don't fill from memory."
     )
 
+    # PRICING — always show the Nash discount. Each product carries `list_price`
+    # (the store's price) and `nash_price` (what the shopper pays, 5% less).
+    _pct = int(round(NASH_DISCOUNT_PCT * 100))
+    img_note += (
+        f"\n\nHOW TO SHOW PRICE + RATING — keep it CLEAN and scannable. Put each "
+        f"product on its OWN line or card; never merge several products' prices "
+        f"and ratings into one running sentence. Per product, one short stat "
+        f"line, in this shape:\n"
+        f"    **Runfalcon 5** — **$51.30** (was $54) · 4.6★ (17k)\n"
+        f"Rules:\n"
+        f"  • Lead with the Nash price in bold, then the store price once as "
+        f"\"(was $X)\". Use each product's own `nash_price`/`list_price` "
+        f"verbatim — never compute your own discount. No `list_price`? Show the "
+        f"item without a price; don't invent one.\n"
+        f"  • Say \"{_pct}% off with Nash\" AT MOST once for the whole list "
+        f"(e.g. a short lead-in), NOT on every product line.\n"
+        f"  • Rating: show the stars AND how many people reviewed right next to "
+        f"it, using `rating` and `reviews_count`, with the count abbreviated — "
+        f"e.g. \"4.6★ (17k)\" for 17,000 reviews, \"4.6★ (1.2k)\" for 1,200. If "
+        f"a product has a rating but no `reviews_count`, show just \"4.6★\". "
+        f"Never invent a rating or count, and never show a vague range like "
+        f"\"16–19k\".\n"
+        f"  • Keep any description to ONE short clause. Do NOT stack store price, "
+        f"Nash price, percent, stars and review counts all in one breath — that "
+        f"is the cluttered look to avoid."
+    )
+
+    # RETURNS — pointer only; Nash does not scrape or promise store policies.
+    img_note += (
+        f"\n\nRETURNS — if the user asks about returns, say returns follow the "
+        f"origin store's own return policy (Nash places the order there on "
+        f"their behalf), and point them to that store's returns page. Do not "
+        f"quote specific return windows or terms unless the store's policy is "
+        f"in this response — never guess a policy."
+    )
+
     if matched == 0:
         return (
             "Zero products matched the query. Tell the user plainly: 'No "
@@ -3100,9 +3448,9 @@ def _build_list_products_next_action(*, matched: int, returned: int,
     if matched <= 5:
         return (
             f"{matched} products matched — small enough to show all. Present "
-            f"each as a visual card:\n\n"
-            f"  ![Product](image_url)\n"
-            f"  **Product name** — $price · 1-line pitch\n\n"
+            f"each as a card — a web-searched photo (see IMAGES below) above a "
+            f"stat line:\n\n"
+            f"  **Product name** — **$nash_price** (was $list_price) · rating (reviews_count)\n\n"
             f"Then ask: \"Which one?\"{img_note}\n\n"
             f"After the user picks, ask ONE variant question at a time (size "
             f"first, then color, etc.) — never dump all variant fields in "
@@ -3130,18 +3478,8 @@ def _build_list_products_next_action(*, matched: int, returned: int,
     )
 
 
-@mcp.tool(
-    annotations={
-        "title": "Start negotiation",
-        # Creates a new session record at the merchant — additive write,
-        # not destructive. Each call spawns a fresh session so it's not
-        # idempotent. Talks to an external merchant endpoint.
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": False,
-        "openWorldHint": True,
-    }
-)
+# NOT an MCP tool — deprecated legacy negotiation flow, unregistered so it's not
+# advertised to shopper clients. Function retained for legacy debugging only.
 def start_negotiation(domain: str, product_id: str) -> StartnegotiationResult:
     """**DEPRECATED — DO NOT USE for placing orders.**
 
@@ -3159,21 +3497,7 @@ def start_negotiation(domain: str, product_id: str) -> StartnegotiationResult:
     return StartnegotiationResult.model_validate(_http_get_json(url))
 
 
-@mcp.tool(
-    annotations={
-        "title": "Send negotiation Message",
-        # Appends a turn to an active negotiation. Structurally non-
-        # destructive at the MCP layer. NOTE: a shopper message can
-        # functionally commit (e.g. "I accept that offer") because the
-        # merchant agent on the other side interprets natural language.
-        # Treat each send_message as potentially binding within the
-        # context of the running negotiation.
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": False,
-        "openWorldHint": True,
-    }
-)
+# NOT an MCP tool — deprecated legacy negotiation flow, unregistered.
 def send_message(next_url: str, message: str) -> SendMessageResult:
     """**DEPRECATED — DO NOT USE for placing orders.**
 
@@ -3195,15 +3519,7 @@ def send_message(next_url: str, message: str) -> SendMessageResult:
     return SendMessageResult.model_validate(_http_get_json(url))
 
 
-@mcp.tool(
-    annotations={
-        "title": "Read negotiation History",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    }
-)
+# NOT an MCP tool — deprecated legacy negotiation flow, unregistered.
 def read_history(history_url: str) -> ReadHistoryResult:
     """Read the running history of a chat session.
 
@@ -3355,10 +3671,14 @@ def create_nash_order(
       confirmed choice.
 
     PRICING:
-      • nash_price_usd is what the customer pays Pier39 (Nash's price)
-      • msrp_usd is the merchant's list price (so the customer sees their savings)
+      • Nash gives a flat 5% discount off the store's list price.
+      • msrp_usd is the store's list price (the product's `list_price` from
+        list_products) — so the customer sees their savings.
+      • nash_price_usd is what the customer pays Pier39 — the product's
+        `nash_price` from list_products (= list_price × 0.95). Pass that value
+        through; don't recompute your own discount.
       • Always: nash_price_usd <= msrp_usd (or omit msrp_usd if unknown)
-      • Nash absorbs the discount as customer-acquisition cost
+      • Nash absorbs the 5% as customer-acquisition cost
 
     Args:
         store_slug: Short identifier for the store (from find_stores). Used internally.
@@ -3406,6 +3726,24 @@ def create_nash_order(
         order_id, amount_usd, savings_usd, and next_action prose.
     """
     _log_call("create_nash_order", store_slug or "?")
+
+    _tel.emit("order_attempt", tool="create_nash_order", domain=(store_slug or store_name),
+              country=(shipping_country or None), currency=(currency or None))
+
+    # Commerce-policy gate: Nash handles PHYSICAL GOODS ONLY and blocks the
+    # prohibited categories (digital goods/services, adult, gambling, drugs,
+    # Rx, tobacco, weapons, etc.). Runs before any Stripe/merchant call so a
+    # disallowed item is never charged. Fail-open (allows) on classifier error.
+    _policy_block = _commerce_policy_block(product_description, store_name)
+    if _policy_block:
+        _tel.emit("order_attempt", tool="create_nash_order",
+                  domain=(store_slug or store_name), outcome="blocked",
+                  block_reason="commerce_policy")
+        raise RuntimeError(
+            f"I can't place this order through Nash — it looks like {_policy_block}, "
+            f"and Nash only handles physical consumer goods. Is there something "
+            f"else I can help you find instead?"
+        )
 
     # Sanity-check inputs to fail fast on agent mistakes
     if not (customer_email and "@" in customer_email):
@@ -3820,6 +4158,10 @@ def create_nash_order(
             + (f' (save {_sym}{savings_usd:.2f} vs {_sym}{msrp_usd:.2f} MSRP)' if savings_usd > 0 else '')
         )
 
+    _tel.emit("order_created", tool="create_nash_order", domain=(store_slug or store_name),
+              outcome="ok", country=(shipping_country or None),
+              amount_cents=nash_price_cents, currency=_cur,
+              meta={"order_id": order_id})
     return CreateNashOrderResult(
         order_id=order_id,
         payment_url=public_payment_url,
